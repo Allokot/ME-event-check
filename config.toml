@@ -1,0 +1,76 @@
+# Middle East aviation event monitor (step 1: event check)
+# Edit freely. Terms are matched case-insensitively at word starts,
+# so "iran" also matches "Iranian" and "retaliat" matches "retaliation".
+
+[settings]
+timezone = "Europe/Amsterdam"
+lookback = "2h"            # news window per run; overlaps the 30-min schedule, duplicates are dropped
+cooldown_minutes = 90      # minimum gap between news alerts for the same region
+cluster_threshold = 6      # medium items for one region in one run that escalate to an alert
+seen_retention_days = 7
+digest_hour = 7            # local hour of the daily "still alive" digest
+
+# Region name -> terms that identify it in a headline
+[regions]
+Iran         = ["iran", "tehran", "isfahan", "shiraz", "mashhad", "bandar abbas"]
+Iraq         = ["iraq", "baghdad", "erbil", "basra"]
+Israel       = ["israel", "tel aviv", "ben gurion", "jerusalem", "haifa", "eilat"]
+Lebanon      = ["lebanon", "lebanese", "beirut", "hezbollah"]
+Syria        = ["syria", "damascus", "aleppo"]
+Jordan       = ["jordan", "amman", "aqaba"]
+Saudi_Arabia = ["saudi", "riyadh", "jeddah", "dammam"]
+Yemen        = ["yemen", "houthi", "sanaa", "aden"]
+UAE          = ["uae", "emirati", "dubai", "abu dhabi", "sharjah"]
+Qatar        = ["qatar", "doha"]
+Bahrain      = ["bahrain", "manama"]
+Kuwait       = ["kuwait"]
+Oman         = ["oman", "muscat"]
+Egypt_Sinai  = ["sinai", "sharm el-sheikh"]
+Gulf_waters  = ["strait of hormuz", "persian gulf", "gulf of oman", "red sea"]
+
+[keywords]
+# Aviation-impact terms: one hit plus a region makes an alert
+high = [
+  "airspace", "notam", "no-fly", "flights suspended", "suspends flights", "suspended flights",
+  "suspend flights", "flights cancelled", "flights canceled", "cancels flights", "cancelled flights",
+  "airport closed", "closes airport", "airport closure", "flights diverted", "diverted flights",
+  "reroute", "flight ban", "halts flights", "grounded",
+]
+# Security terms: logged; enough of them for one region in one run makes a cluster alert
+medium = [
+  "missile", "drone attack", "drone strike", "drones", "airstrike", "air strike", "strikes on",
+  "ballistic", "intercept", "air defence", "air defense", "rocket", "explosions", "gps jamming",
+  "gps spoofing", "escalat", "retaliat",
+]
+
+# GDELT news queries (free, no key, ~15 min update cycle). Keep each under ~500 characters.
+[[gdelt]]
+name = "aviation-levant"
+query = '(airspace OR NOTAM OR "flights suspended" OR "suspends flights" OR "flights cancelled" OR "airport closed" OR rerouted) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen)'
+[[gdelt]]
+name = "aviation-gulf"
+query = '(airspace OR NOTAM OR "flights suspended" OR "suspends flights" OR "flights cancelled" OR "airport closed" OR rerouted) ("Saudi Arabia" OR UAE OR Dubai OR Qatar OR Bahrain OR Kuwait OR Oman OR Hormuz)'
+[[gdelt]]
+name = "security-levant"
+query = '(missile OR airstrike OR "drone attack" OR "air defense" OR ballistic) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen)'
+[[gdelt]]
+name = "security-gulf"
+query = '(missile OR airstrike OR "drone attack" OR "air defense" OR ballistic) ("Saudi Arabia" OR UAE OR Dubai OR Qatar OR Bahrain OR Kuwait OR Oman OR Hormuz)'
+
+# Google News RSS searches (free, no key). "when:2h" limits to recent items.
+[[google_news]]
+name = "aviation"
+query = '(airspace OR NOTAM OR "flights suspended" OR "flights cancelled" OR "airport closed") (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman) when:2h'
+[[google_news]]
+name = "security"
+query = '(missile OR airstrike OR "drone attack" OR "air defense") (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman) when:2h'
+
+# EASA Conflict Zone Information Bulletins: any new bulletin or revision alerts immediately.
+[easa]
+url = "https://www.easa.europa.eu/en/domains/air-operations/czibs"
+
+# Pages to diff, e.g. airline travel-advisory pages. Any new sentence that names
+# a region alerts. Some sites block bots; failures show in the daily check-in.
+# [[watch_pages]]
+# name = "Airline X travel updates"
+# url = "https://www.example.com/travel-updates"

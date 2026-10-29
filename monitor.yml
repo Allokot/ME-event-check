@@ -1,0 +1,56 @@
+name: ME event check
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"   # every 30 min, off the :00/:30 peak when GitHub delays runs
+  workflow_dispatch:
+
+concurrency:
+  group: me-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Seen-headline state lives in the Actions cache, so routine runs don't create commits
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: me-state-${{ github.run_id }}
+          restore-keys: me-state-
+
+      - name: Run monitor
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+        run: python monitor.py
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: me-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Only new events or triggers produce a commit
+      - name: Commit log
+        if: always()
+        run: |
+          git add data/ 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "me-monitor"
+          git config user.email "me-monitor@users.noreply.github.com"
+          git commit -m "events $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
