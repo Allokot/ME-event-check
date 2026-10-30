@@ -98,7 +98,7 @@ name = "gn-gulf-local"
 query = '(airspace OR flights OR airport OR airline OR missile OR drone) (site:khaleejtimes.com OR site:gulfnews.com OR site:thenationalnews.com OR site:gulf-times.com OR site:thepeninsulaqatar.com OR site:arabnews.com OR site:kuwaittimes.com OR site:timesofoman.com OR site:gdnonline.com) when:2h'
 [[google_news]]
 name = "gn-levant-local"
-query = '(airspace OR flights OR airport OR airline OR missile OR drone) (site:rudaw.net OR site:kurdistan24.net OR site:shafaq.com OR site:lorientlejour.com OR site:naharnet.com OR site:jordantimes.com OR site:iranintl.com OR site:english.aawsat.com) when:2h'
+query = '(airspace OR flights OR airport OR airline OR missile OR drone) (site:rudaw.net OR site:kurdistan24.net OR site:shafaq.com OR site:lorientlejour.com OR site:naharnet.com OR site:jordantimes.com OR site:iranintl.com OR site:english.aawsat.com OR site:timesofisrael.com) when:2h'
 [[google_news]]
 name = "gn-arabic-ae"
 query = '("المجال الجوي" OR "إلغاء الرحلات" OR "تعليق الرحلات" OR "إغلاق مطار" OR صواريخ OR "الدفاع الجوي") when:2h'
@@ -119,17 +119,13 @@ gl = "LB"
 ceid = "LB:ar"
 [[google_news]]
 name = "gn-hebrew"
-query = '("המרחב האווירי" OR "ביטול טיסות" OR טיסות OR טילים OR יירוט) when:2h'
+query = '("המרחב האווירי" OR "ביטול טיסות" OR טיסות OR טילים OR יירוט OR נתב"ג) when:6h'
 hl = "he"
 gl = "IL"
 ceid = "IL:he"
 region = "Israel"
 
 # Direct RSS feeds from regional outlets. region = default when a headline names none.
-[[rss]]
-name = "Times of Israel"
-url = "https://www.timesofisrael.com/feed/"
-region = "Israel"
 [[rss]]
 name = "Jerusalem Post"
 url = "https://www.jpost.com/rss/rssfeedsfrontpage.aspx"
