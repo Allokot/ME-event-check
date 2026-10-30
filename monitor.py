@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Middle East aviation event monitor, step 1.
 
-Polls free news and advisory sources, logs Middle East aviation and security
-events, pushes alerts via ntfy, and writes triggers for the step-2 traffic scan.
+Polls free news feeds (English, Arabic, Hebrew, Persian) and EASA conflict-zone
+bulletins, logs Middle East aviation and security events, pushes alerts via
+ntfy, and writes triggers for the step-2 traffic scan.
 Standard library only. Run:  python monitor.py [--dry-run]
 """
 from __future__ import annotations
@@ -16,6 +17,8 @@ import re
 import sys
 import time
 import tomllib
+import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -25,10 +28,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
-UA = "me-aviation-monitor/1.0 (personal, non-commercial)"
+UA = "Mozilla/5.0 (compatible; me-aviation-monitor/1.1; personal use)"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GNEWS_URL = "https://news.google.com/rss/search"
-GDELT_GAP_S = 6  # GDELT asks for at most one request per 5 s
+ATOM = "{http://www.w3.org/2005/Atom}"
 
 
 # ---------- helpers ----------
@@ -45,27 +48,75 @@ def parse_iso(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
-def http_get(url: str, timeout: int = 25) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def http_get(url: str, timeout: int = 25) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+        return r.read()
+
+
+_AR_DIACRITICS = re.compile("[ً-ٰٟـ]")
+_CHARMAP = str.maketrans({
+    "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ي": "ی", "ى": "ی", "ك": "ک", "ة": "ه",
+    "״": '"', "׳": "'", "“": '"', "”": '"', "’": "'", "‘": "'",
+})
+
+
+def normalise(s: str) -> str:
+    """Fold case and spelling variants so one term covers Arabic, Persian and Hebrew forms."""
+    s = unicodedata.normalize("NFC", s).lower()
+    return _AR_DIACRITICS.sub("", s).translate(_CHARMAP)
 
 
 def norm_key(title: str) -> str:
     """Dedup key: the same headline from different sources collapses to one."""
-    t = re.sub(r"\s+-\s+[^-]{2,60}$", "", title)  # strip " - Publisher" suffix
-    t = re.sub(r"[^a-z0-9 ]", "", t.lower())
+    t = re.sub(r"\s+[-|–]\s+[^-|–]{2,60}$", "", title)  # strip " - Publisher" suffix
+    t = re.sub(r"[^\w ]", "", normalise(t))
     t = re.sub(r"\s+", " ", t).strip()[:90]
     return hashlib.sha1(t.encode()).hexdigest()[:16]
 
 
-def compile_terms(terms: list[str]) -> re.Pattern:
-    alts = "|".join(re.escape(t.lower()) for t in sorted(terms, key=len, reverse=True))
-    return re.compile(rf"\b(?:{alts})", re.IGNORECASE)
+def compile_terms(terms: list[str]) -> re.Pattern | None:
+    parts = []
+    for raw in terms:
+        if raw.startswith("re:"):  # raw regular expression, applied to normalised text
+            parts.append(f"(?:{raw[3:]})")
+    for t in sorted({normalise(x) for x in terms if not x.startswith("re:")}, key=len, reverse=True):
+        e = re.escape(t)
+        parts.append(rf"\b{e}" if t.isascii() else e)  # non-Latin scripts attach prefixes
+    return re.compile("|".join(parts)) if parts else None
 
 
-def gdelt_timespan(lookback: str) -> str:
-    return lookback.replace("min", "m")
+def parse_time(s: str | None, fallback: datetime) -> datetime:
+    if not s:
+        return fallback
+    s = s.strip()
+    try:
+        return parsedate_to_datetime(s).astimezone(timezone.utc)
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return fallback
+
+
+def parse_feed(raw: bytes, t0: datetime) -> list[dict]:
+    """RSS 2.0 or Atom -> [{'title','url','publisher','time'}]."""
+    root = ET.fromstring(raw)
+    out = []
+    for it in root.iter("item"):
+        src = it.find("source")
+        out.append({"title": html.unescape((it.findtext("title") or "").strip()),
+                    "url": (it.findtext("link") or "").strip(),
+                    "publisher": (src.text or "") if src is not None else "",
+                    "time": iso(parse_time(it.findtext("pubDate"), t0))})
+    for e in root.iter(f"{ATOM}entry"):
+        link = e.find(f"{ATOM}link")
+        out.append({"title": html.unescape((e.findtext(f"{ATOM}title") or "").strip()),
+                    "url": link.get("href", "") if link is not None else "",
+                    "publisher": "",
+                    "time": iso(parse_time(e.findtext(f"{ATOM}updated") or e.findtext(f"{ATOM}published"), t0))})
+    return out
 
 
 # ---------- classification ----------
@@ -73,59 +124,84 @@ def gdelt_timespan(lookback: str) -> str:
 class Classifier:
     def __init__(self, cfg: dict):
         self.regions = {name: compile_terms(terms) for name, terms in cfg["regions"].items()}
-        self.high = compile_terms(cfg["keywords"]["high"])
-        self.medium = compile_terms(cfg["keywords"]["medium"])
+        kw = cfg["keywords"]
+        self.high = compile_terms(kw["high"])
+        self.medium = compile_terms(kw["medium"])
+        self.exclude = compile_terms(kw.get("exclude", []))
 
     def regions_in(self, text: str) -> list[str]:
-        return [name for name, rx in self.regions.items() if rx.search(text)]
+        t = normalise(text)
+        return [name for name, rx in self.regions.items() if rx and rx.search(t)]
 
     def severity(self, text: str) -> str | None:
-        if self.high.search(text):
+        t = normalise(text)
+        if self.exclude and self.exclude.search(t):
+            return None
+        if self.high and self.high.search(t):
             return "high"
-        if self.medium.search(text):
+        if self.medium and self.medium.search(t):
             return "medium"
         return None
 
 
 # ---------- sources ----------
+# Each news source is a callable returning items; build_news_sources lists them by name.
 
-def fetch_gdelt(cfg: dict, get=http_get) -> list[dict]:
-    items, span = [], gdelt_timespan(cfg["settings"]["lookback"])
-    for i, q in enumerate(cfg.get("gdelt", [])):
-        if i:
-            time.sleep(GDELT_GAP_S)
+def gdelt_source(q: dict, get=http_get):
+    def fetch(t0: datetime) -> list[dict]:
         params = {"query": q["query"], "mode": "artlist", "format": "json",
-                  "timespan": span, "maxrecords": "75", "sort": "datedesc"}
-        raw = get(f"{GDELT_URL}?{urllib.parse.urlencode(params)}")
+                  "timespan": "2h", "maxrecords": "75", "sort": "datedesc"}
+        url = f"{GDELT_URL}?{urllib.parse.urlencode(params)}"
+        for attempt in range(2):
+            try:
+                raw = get(url).decode("utf-8", errors="replace")
+                break
+            except urllib.error.HTTPError as e:
+                if e.code != 429 or attempt:
+                    raise
+                time.sleep(10)
         try:
             data = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
-            raise RuntimeError(f"GDELT {q['name']}: {raw.strip()[:120]}")
+            raise RuntimeError(raw.strip()[:120])
+        items = []
         for a in data.get("articles", []) or []:
             try:
-                ts = iso(datetime.strptime(a.get("seendate", ""), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
+                ts = datetime.strptime(a.get("seendate", ""), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
             except ValueError:
-                ts = iso(now_utc())
-            items.append({"source": f"gdelt:{q['name']}", "title": a.get("title", "").strip(),
-                          "url": a.get("url", ""), "publisher": a.get("domain", ""), "time": ts})
-    return items
+                ts = t0
+            items.append({"title": a.get("title", "").strip(), "url": a.get("url", ""),
+                          "publisher": a.get("domain", ""), "time": iso(ts)})
+        return items
+    return fetch
 
 
-def fetch_google_news(cfg: dict, get=http_get) -> list[dict]:
-    items = []
+def gnews_source(q: dict, get=http_get):
+    def fetch(t0: datetime) -> list[dict]:
+        params = {"q": q["query"], "hl": q.get("hl", "en-US"), "gl": q.get("gl", "US"),
+                  "ceid": q.get("ceid", "US:en")}
+        return parse_feed(get(f"{GNEWS_URL}?{urllib.parse.urlencode(params)}"), t0)
+    return fetch
+
+
+def rss_source(f: dict, get=http_get):
+    def fetch(t0: datetime) -> list[dict]:
+        items = parse_feed(get(f["url"]), t0)
+        for it in items:
+            it["publisher"] = it["publisher"] or f["name"]
+        return items
+    return fetch
+
+
+def build_news_sources(cfg: dict, get=http_get) -> list[tuple[str, dict, callable]]:
+    out = []
+    for q in cfg.get("gdelt", []):
+        out.append((f"gdelt:{q['name']}", q, gdelt_source(q, get)))
     for q in cfg.get("google_news", []):
-        params = {"q": q["query"], "hl": "en-US", "gl": "US", "ceid": "US:en"}
-        root = ET.fromstring(get(f"{GNEWS_URL}?{urllib.parse.urlencode(params)}"))
-        for it in root.iter("item"):
-            title = (it.findtext("title") or "").strip()
-            try:
-                ts = iso(parsedate_to_datetime(it.findtext("pubDate") or ""))
-            except (TypeError, ValueError):
-                ts = iso(now_utc())
-            items.append({"source": f"gnews:{q['name']}", "title": title,
-                          "url": it.findtext("link") or "",
-                          "publisher": it.findtext("source") or "", "time": ts})
-    return items
+        out.append((f"gnews:{q['name']}", q, gnews_source(q, get)))
+    for f in cfg.get("rss", []):
+        out.append((f"rss:{f['name']}", f, rss_source(f, get)))
+    return out
 
 
 CZIB_LINK = re.compile(r'href="([^"]*/czibs/(czib-?[0-9][0-9a-z-]*))"', re.IGNORECASE)
@@ -134,12 +210,12 @@ CZIB_LINK = re.compile(r'href="([^"]*/czibs/(czib-?[0-9][0-9a-z-]*))"', re.IGNOR
 def fetch_easa(cfg: dict, get=http_get) -> dict[str, str]:
     """Return {bulletin slug: absolute url} for every CZIB linked from the index page."""
     url = cfg["easa"]["url"]
-    page = get(url)
+    page = get(url).decode("utf-8", errors="replace")
     found = {}
     for href, slug in CZIB_LINK.findall(page):
         found[slug.lower()] = urllib.parse.urljoin(url, html.unescape(href))
     if not found:
-        raise RuntimeError("EASA: no bulletin links found (page layout may have changed)")
+        raise RuntimeError("no bulletin links found (page layout may have changed)")
     return found
 
 
@@ -160,7 +236,7 @@ def load_json(path: Path, default):
 
 
 def empty_state() -> dict:
-    return {"seen": {}, "czibs": {}, "pages": {}, "last_alert": {},
+    return {"seen": {}, "czibs": {}, "pages": {}, "last_alert": {}, "sources_init": [],
             "last_digest": "", "failures": {}, "initialised": False}
 
 
@@ -185,53 +261,64 @@ def send_ntfy(title: str, message: str, priority: int, click: str = "", tags=Non
 
 # ---------- main run ----------
 
-def run(cfg: dict, state: dict, fetchers: dict, dry_run: bool = False, clock=now_utc) -> dict:
-    """One monitoring pass. Returns {'events': [...], 'triggers': [...], 'alerts': [...]}."""
+def run(cfg: dict, state: dict, news_sources, easa=None, page_get=None,
+        clock=now_utc, pause: float = 0) -> dict:
+    """One monitoring pass. Returns {'events','triggers','alerts','errors','status'}."""
     t0 = clock()
     s = cfg["settings"]
     clf = Classifier(cfg)
+    state.setdefault("sources_init", [])
     warmup = not state.get("initialised")
-    events, triggers, alerts, errors = [], [], [], []
+    events, triggers, alerts, errors, status = [], [], [], [], []
+    max_age = timedelta(hours=s.get("max_age_hours", 6))
+    news_ok = False
 
     # 1. news
-    news, news_ok = [], False
-    for name in ("gdelt", "google_news"):
-        if not cfg.get(name):
-            continue
+    by_region: dict[str, list[dict]] = {}
+    for i, (name, conf, fetch) in enumerate(news_sources):
+        if i and pause:
+            time.sleep(pause)
         try:
-            news += fetchers[name](cfg)
-            news_ok = True
+            items = fetch(t0)
             state["failures"][name] = 0
+            news_ok = True
         except Exception as e:  # one dead source must not stop the run
             state["failures"][name] = state["failures"].get(name, 0) + 1
-            errors.append(f"{name}: {e}")
-
-    by_region: dict[str, list[dict]] = {}
-    for it in news:
-        if not it["title"]:
+            errors.append(f"{name}: {str(e)[:150]}")
+            status.append(f"{name}: FAILED ({str(e)[:80]})")
             continue
-        key = norm_key(it["title"])
-        if key in state["seen"]:
-            continue
-        state["seen"][key] = iso(t0)
-        sev = clf.severity(it["title"])
-        regions = clf.regions_in(it["title"])
-        if not sev or not regions:
-            continue
-        ev = {**it, "severity": sev, "regions": regions, "logged": iso(t0)}
-        events.append(ev)
-        for r in regions:
-            by_region.setdefault(r, []).append(ev)
+        first_time = name not in state["sources_init"]
+        kept = 0
+        for it in items:
+            if not it["title"]:
+                continue
+            key = norm_key(it["title"])
+            if key in state["seen"]:
+                continue
+            state["seen"][key] = iso(t0)
+            if first_time or t0 - parse_iso(it["time"]) > max_age:
+                continue  # baseline for a new source, or stale item
+            sev = clf.severity(it["title"])
+            regions = clf.regions_in(it["title"]) or ([conf["region"]] if conf.get("region") else [])
+            if not sev or not regions:
+                continue
+            ev = {**it, "source": name, "severity": sev, "regions": regions, "logged": iso(t0)}
+            events.append(ev)
+            kept += 1
+            for r in regions:
+                by_region.setdefault(r, []).append(ev)
+        if first_time:
+            state["sources_init"].append(name)
+        status.append(f"{name}: {len(items)} items, {kept} relevant" + (" (baseline)" if first_time else ""))
 
     cooldown = timedelta(minutes=s["cooldown_minutes"])
     for region, evs in by_region.items():
         highs = [e for e in evs if e["severity"] == "high"]
-        reason = None
         if highs:
             reason = "aviation"
         elif len(evs) >= s["cluster_threshold"]:
             reason = "security-cluster"
-        if not reason:
+        else:
             continue
         last = state["last_alert"].get(region)
         cooling = last and t0 - parse_iso(last) < cooldown
@@ -246,9 +333,9 @@ def run(cfg: dict, state: dict, fetchers: dict, dry_run: bool = False, clock=now
                            "click": lead["url"], "tags": ["airplane"] if highs else ["warning"]})
 
     # 2. EASA bulletins
-    if cfg.get("easa"):
+    if cfg.get("easa") and easa:
         try:
-            current = fetchers["easa"](cfg)
+            current = easa(cfg)
             state["failures"]["easa"] = 0
             new = sorted(set(current) - set(state["czibs"]))
             if state["czibs"] and new:
@@ -263,55 +350,59 @@ def run(cfg: dict, state: dict, fetchers: dict, dry_run: bool = False, clock=now
                                    "message": "Check affected FIRs and validity.", "priority": 5,
                                    "click": current[slug], "tags": ["rotating_light"]})
             state["czibs"].update({k: iso(t0) for k in new})
+            status.append(f"easa: {len(current)} bulletins listed, {len(new)} new")
         except Exception as e:
             state["failures"]["easa"] = state["failures"].get("easa", 0) + 1
-            errors.append(f"easa: {e}")
+            errors.append(f"easa: {str(e)[:150]}")
+            status.append(f"easa: FAILED ({str(e)[:80]})")
 
     # 3. watched pages
     for page in cfg.get("watch_pages", []):
         try:
-            sents = page_sentences(fetchers["page"](page["url"]))
+            sents = page_sentences(page_get(page["url"]).decode("utf-8", errors="replace"))
             known = set(state["pages"].get(page["url"], []))
-            fresh = [x for x in sents if hashlib.sha1(x.encode()).hexdigest()[:12] not in known]
             if known:
-                for sentence in fresh:
+                for sentence in sents:
+                    if hashlib.sha1(sentence.encode()).hexdigest()[:12] in known:
+                        continue
                     regions = clf.regions_in(sentence)
                     if not regions:
                         continue
-                    sev = "high"  # the page is an aviation advisory, so any new regional line matters
                     ev = {"source": f"page:{page['name']}", "title": sentence, "url": page["url"],
-                          "publisher": page["name"], "time": iso(t0), "severity": sev,
+                          "publisher": page["name"], "time": iso(t0), "severity": "high",
                           "regions": regions, "logged": iso(t0)}
                     events.append(ev)
-                    if sev == "high":
-                        triggers.append({"time": iso(t0), "region": regions[0], "reason": "advisory-page",
-                                         "count": 1, "headline": sentence, "url": page["url"]})
-                        alerts.append({"title": f"{page['name']} updated: {', '.join(regions)}",
-                                       "message": sentence, "priority": 4, "click": page["url"],
-                                       "tags": ["airplane"]})
+                    triggers.append({"time": iso(t0), "region": regions[0], "reason": "advisory-page",
+                                     "count": 1, "headline": sentence, "url": page["url"]})
+                    alerts.append({"title": f"{page['name']} updated: {', '.join(regions)}",
+                                   "message": sentence, "priority": 4, "click": page["url"],
+                                   "tags": ["airplane"]})
             state["pages"][page["url"]] = [hashlib.sha1(x.encode()).hexdigest()[:12] for x in sents]
             state["failures"][page["url"]] = 0
+            status.append(f"page:{page['name']}: {len(sents)} sentences")
         except Exception as e:
             state["failures"][page["url"]] = state["failures"].get(page["url"], 0) + 1
-            errors.append(f"{page['name']}: {e}")
+            errors.append(f"{page['name']}: {str(e)[:150]}")
+            status.append(f"page:{page['name']}: FAILED ({str(e)[:80]})")
 
     # 4. housekeeping
     keep = t0 - timedelta(days=s["seen_retention_days"])
     state["seen"] = {k: v for k, v in state["seen"].items() if parse_iso(v) >= keep}
 
     for src, n in state["failures"].items():
-        if n == 6:  # three hours of consecutive failures; alert once
+        if n == 6:  # about three to six hours of consecutive failures; alert once
             alerts.append({"title": f"Monitor source failing: {src}",
                            "message": "Six consecutive failures. Check the Actions log.",
-                           "priority": 3, "click": "", "tags": ["wrench"]})
+                           "priority": 2, "click": "", "tags": ["wrench"]})
 
     local = t0.astimezone(ZoneInfo(s["timezone"]))
     today = local.date().isoformat()
     if local.hour >= s["digest_hour"] and state.get("last_digest") != today:
         state["last_digest"] = today
+        failing = [k for k, v in state["failures"].items() if v]
         alerts.append({"title": "ME monitor daily check-in",
                        "message": f"Running. This pass: {len(events)} new events, {len(triggers)} triggers. "
-                                  f"Sources failing: {', '.join(k for k, v in state['failures'].items() if v) or 'none'}.",
+                                  f"Sources failing: {', '.join(failing) or 'none'}.",
                        "priority": 2, "click": "", "tags": ["white_check_mark"]})
 
     if warmup:  # learn the current baseline before alerting, so the first live run doesn't flood
@@ -323,14 +414,7 @@ def run(cfg: dict, state: dict, fetchers: dict, dry_run: bool = False, clock=now
                                   "Alerts start from the next run.",
                        "priority": 3, "click": "", "tags": ["white_check_mark"]}]
 
-    for e in errors:
-        print(f"  ! {e}", file=sys.stderr)
-    return {"events": events, "triggers": triggers, "alerts": alerts, "errors": errors}
-
-
-def default_fetchers() -> dict:
-    return {"gdelt": fetch_gdelt, "google_news": fetch_google_news,
-            "easa": fetch_easa, "page": http_get}
+    return {"events": events, "triggers": triggers, "alerts": alerts, "errors": errors, "status": status}
 
 
 def append_jsonl(path: Path, rows: list[dict]) -> None:
@@ -350,11 +434,13 @@ def main() -> int:
     ap.add_argument("--data", default=str(ROOT / "data"))
     a = ap.parse_args()
 
-    cfg = tomllib.loads(Path(a.config).read_text())
+    cfg = tomllib.loads(Path(a.config).read_text(encoding="utf-8"))
     state_path = Path(a.state)
     state = {**empty_state(), **load_json(state_path, {})}
-    out = run(cfg, state, default_fetchers(), dry_run=a.dry_run)
+    out = run(cfg, state, build_news_sources(cfg), easa=fetch_easa, page_get=http_get, pause=1.5)
 
+    for line in out["status"]:
+        print("  " + line)
     print(f"events={len(out['events'])} triggers={len(out['triggers'])} "
           f"alerts={len(out['alerts'])} errors={len(out['errors'])}")
     for al in out["alerts"]:
@@ -371,9 +457,9 @@ def main() -> int:
     append_jsonl(data / "events.jsonl", out["events"])
     append_jsonl(data / "triggers.jsonl", out["triggers"])
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=1))
+    state_path.write_text(json.dumps(state, indent=1, ensure_ascii=False))
     # a run where every source failed should show red in GitHub
-    return 1 if out["errors"] and not out["events"] and len(out["errors"]) >= 3 else 0
+    return 1 if out["errors"] and not out["events"] and not any("FAILED" not in x for x in out["status"]) else 0
 
 
 if __name__ == "__main__":
