@@ -1,76 +1,188 @@
 # Middle East aviation event monitor (step 1: event check)
-# Edit freely. Terms are matched case-insensitively at word starts,
-# so "iran" also matches "Iranian" and "retaliat" matches "retaliation".
+# Matching is on headlines. English terms match at word starts ("iran" also hits "Iranian");
+# Arabic, Hebrew and Persian terms match anywhere, because prefixes attach to words.
+# Spelling variants (أ/ا, ي/ی, ״/") are normalised, so one spelling per term is enough.
 
 [settings]
 timezone = "Europe/Amsterdam"
-lookback = "2h"            # news window per run; overlaps the 30-min schedule, duplicates are dropped
 cooldown_minutes = 90      # minimum gap between news alerts for the same region
 cluster_threshold = 6      # medium items for one region in one run that escalate to an alert
+max_age_hours = 6          # ignore items older than this
 seen_retention_days = 7
-digest_hour = 7            # local hour of the daily "still alive" digest
+digest_hour = 7            # local hour of the daily check-in
 
-# Region name -> terms that identify it in a headline
+# Region -> terms that identify it in a headline (home airlines included)
 [regions]
-Iran         = ["iran", "tehran", "isfahan", "shiraz", "mashhad", "bandar abbas"]
-Iraq         = ["iraq", "baghdad", "erbil", "basra"]
-Israel       = ["israel", "tel aviv", "ben gurion", "jerusalem", "haifa", "eilat"]
-Lebanon      = ["lebanon", "lebanese", "beirut", "hezbollah"]
-Syria        = ["syria", "damascus", "aleppo"]
-Jordan       = ["jordan", "amman", "aqaba"]
-Saudi_Arabia = ["saudi", "riyadh", "jeddah", "dammam"]
-Yemen        = ["yemen", "houthi", "sanaa", "aden"]
-UAE          = ["uae", "emirati", "dubai", "abu dhabi", "sharjah"]
-Qatar        = ["qatar", "doha"]
-Bahrain      = ["bahrain", "manama"]
-Kuwait       = ["kuwait"]
-Oman         = ["oman", "muscat"]
-Egypt_Sinai  = ["sinai", "sharm el-sheikh"]
-Gulf_waters  = ["strait of hormuz", "persian gulf", "gulf of oman", "red sea"]
+Middle_East  = ["middle east", "الشرق الاوسط", "המזרח התיכון", "خاورمیانه"]
+Iran         = ["imam khomeini", "mehrabad", "iran air", "mahan air", "iran", "tehran", "isfahan", "shiraz", "mashhad", "bandar abbas", "ایران", "طهران", "تهران", "اصفهان", "איראן", "טהרן"]
+Iraq         = ["iraq", "baghdad", "erbil", "basra", "kurdistan region", "عراق", "بغداد", "اربیل", "עיראק", "בגדאד"]
+Israel       = ["el al", "israir", "arkia", "israel", "tel aviv", "ben gurion", "jerusalem", "haifa", "eilat", "اسرائیل", "تل ابیب", "ישראל", "תל אביב", "נתב\"ג", "בן גוריון", "אילת", "חיפה"]
+Lebanon      = ["rafic hariri", "middle east airlines", "lebanon", "lebanese", "beirut", "hezbollah", "لبنان", "بیروت", "حزب الله", "לבנון", "ביירות", "חיזבאללה"]
+Syria        = ["syria", "damascus", "aleppo", "سوریا", "سوریه", "دمشق", "حلب", "סוריה", "דמשק"]
+Jordan       = ["queen alia", "royal jordanian", "jordan", "amman", "aqaba", "الاردن", "اردن", "العقبه", "ירדן", "עקבה"]
+Saudi_Arabia = ["king khalid", "king abdulaziz", "king fahd", "najran", "jizan", "jazan", "mecca", "makkah", "medina", "نجران", "جازان", "saudia", "flynas", "flyadeal", "riyadh air", "saudi", "riyadh", "jeddah", "dammam", "abha", "السعودیه", "عربستان", "الریاض", "جده", "الدمام", "סעודיה", "ריאד"]
+Yemen        = ["yemen", "houthi", "sanaa", "aden", "الیمن", "یمن", "الحوثی", "حوثی", "صنعاء", "תימן", "חות'י"]
+UAE          = ["flydubai", "emirates", "etihad", "air arabia", "uae", "emirati", "dubai", "abu dhabi", "sharjah", "الامارات", "امارات", "دبی", "ابوظبی", "ابو ظبی", "الشارقه", "האמירויות", "דובאי", "אבו דאבי"]
+Qatar        = ["hamad international", "qatar", "doha", "قطر", "الدوحه", "קטר", "דוחא"]
+Bahrain      = ["gulf air", "bahrain", "manama", "البحرین", "بحرین", "المنامه", "בחריין"]
+Kuwait       = ["kuwait", "الکویت", "کویت", "כווית"]
+Oman         = ["oman", "muscat", "سلطنه عمان", "مسقط", "עומאן"]
+Egypt_Sinai  = ["sinai", "sharm el-sheikh", "سیناء", "شرم الشیخ", "סיני"]
+Gulf_waters  = ["strait of hormuz", "persian gulf", "gulf of oman", "red sea", "مضیق هرمز", "تنگه هرمز", "البحر الاحمر", "הורמוז", "ים סוף"]
 
 [keywords]
-# Aviation-impact terms: one hit plus a region makes an alert
+# Aviation disruption: one hit plus a region makes an alert
 high = [
-  "airspace", "notam", "no-fly", "flights suspended", "suspends flights", "suspended flights",
-  "suspend flights", "flights cancelled", "flights canceled", "cancels flights", "cancelled flights",
-  "airport closed", "closes airport", "airport closure", "flights diverted", "diverted flights",
-  "reroute", "flight ban", "halts flights", "grounded",
+  # English. "re:" lines are patterns: an action word within a few words of "airspace" or "airlines"
+  're:\b(clos|shut|reopen|restor|avoid|warn|advis|threat|bans?\b|block)\w*\W+(?:\w+\W+){0,5}?airspace',
+  're:airspace\W+(?:\w+\W+){0,4}?(clos|shut|reopen|restor|unsafe|danger|target|warning|advisory|risk|threat)',
+  're:\bwarns?\W+(?:\w+\W+){0,3}?airlines',
+  're:\bextends?\W+(?:\w+\W+){0,3}?(suspension|cancell)',
+  # Attacks on airports, either word order, in English, Arabic, Hebrew, Persian
+  're:\b(attack|strike|struck|hit|target|shell|bomb|blast|explosion|fire|drone|missile|rocket)\w*\W+(?:\w+\W+){0,6}?airports?\b',
+  're:\bairports?\W+(?:\w+\W+){0,4}?(attack|strike|struck|hit|target|shell|bomb|blast|explosion|fire|drone|missile|rocket)',
+  're:(قصف|استهداف|هجوم|ضرب|غاره|غارات|انفجار|صاروخ|مسیره)[^.]{0,30}مطار',
+  're:مطار[^.]{0,30}(قصف|استهداف|هجوم|ضرب|غاره|انفجار|صاروخ|مسیره)',
+  're:(טיל|פגיע|פגע|נפיל|רחפן|כטב"ם|פיצוץ|תקיפ)[^.]{0,30}(נתב"ג|שדה התעופה|נמל התעופה)',
+  're:(נתב"ג|שדה התעופה|נמל התעופה)[^.]{0,30}(טיל|פגיע|פגע|נפיל|רחפן|כטב"ם|פיצוץ|תקיפ)',
+  're:(حمله|موشک|پهپاد|انفجار)[^.]{0,30}فرودگاه',
+  're:فرودگاه[^.]{0,30}(حمله|موشک|پهپاد|انفجار)',
+  "advises against flights", "closes airspace", "closed airspace", "closes its airspace", "airspace closure", "airspace closed",
+  "shuts airspace", "reopens airspace", "airspace reopen", "unsafe airspace", "airspace unsafe",
+  "avoid airspace", "airspace warning", "airspace restriction", "warns airlines", "no-fly",
+  "notam", "flights suspended", "suspends flights", "suspended flights", "suspend flights",
+  "suspension of flights", "extends suspension", "extend suspension", "flights cancelled",
+  "flights canceled", "cancels flights", "cancelled flights", "flight cancellations",
+  "route cancellations", "airport closed", "closes airport", "airport closure",
+  "flights diverted", "diverted flights", "reroute", "flight ban", "halts flights",
+  "grounded", "suspends operations", "resumes flights", "flights resume",
+  # Arabic
+  "المجال الجوی", "اغلاق الاجواء", "تعلیق الرحلات", "تعلیق رحلات", "الغاء الرحلات", "الغاء رحلات",
+  "اغلاق مطار", "تحویل مسار", "تحویل الرحلات", "حظر الطیران", "توقف حرکه الطیران", "استئناف الرحلات",
+  # Hebrew
+  "המרחב האווירי", "מרחב אווירי", "ביטול טיסות", "ביטולי טיסות", "טיסות בוטלו", "בוטלו טיסות",
+  "השעיית טיסות", "משעות את הטיסות", "מבטלות טיסות", "נסגר לטיסות",
+  # Persian
+  "حریم هوایی", "لغو پرواز", "پروازها لغو", "تعلیق پرواز", "توقف پرواز", "تعطیلی فرودگاه",
 ]
-# Security terms: logged; enough of them for one region in one run makes a cluster alert
+# Security: logged; enough for one region in one run makes a cluster alert
 medium = [
-  "missile", "drone attack", "drone strike", "drones", "airstrike", "air strike", "strikes on",
-  "ballistic", "intercept", "air defence", "air defense", "rocket", "explosions", "gps jamming",
-  "gps spoofing", "escalat", "retaliat",
+  "airspace", "missile", "drone attack", "drone strike", "drones", "airstrike", "air strike",
+  "strikes on", "ballistic", "intercept", "air defence", "air defense", "rocket", "explosions",
+  "gps jamming", "gps spoofing", "escalat", "retaliat",
+  "صاروخ", "صواریخ", "طائره مسیره", "طائرات مسیره", "مسیره", "غاره", "غارات", "الدفاع الجوی", "بالیستی", "انفجارات",
+  "טילים", "שיגור", "יירוט", "כטב\"ם", "רחפן", "אזעקות", "צבע אדום", "תקיפה",
+  "موشک", "پهپاد", "پدافند", "حمله هوایی", "انفجار",
 ]
+# Headlines containing any of these are ignored
+exclude = ["polymarket", "odds", "betting", "prediction market", "stocks", "shares", "crypto",
+           "bitcoin", "football", "fifa", "oil price", "military access", "military action",
+           "us planes", "u.s. planes", "us aircraft", "u.s. aircraft", "conference"]
 
-# GDELT news queries (free, no key, ~15 min update cycle). Keep each under ~500 characters.
-[[gdelt]]
-name = "aviation-levant"
-query = '(airspace OR NOTAM OR "flights suspended" OR "suspends flights" OR "flights cancelled" OR "airport closed" OR rerouted) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen)'
-[[gdelt]]
-name = "aviation-gulf"
-query = '(airspace OR NOTAM OR "flights suspended" OR "suspends flights" OR "flights cancelled" OR "airport closed" OR rerouted) ("Saudi Arabia" OR UAE OR Dubai OR Qatar OR Bahrain OR Kuwait OR Oman OR Hormuz)'
-[[gdelt]]
-name = "security-levant"
-query = '(missile OR airstrike OR "drone attack" OR "air defense" OR ballistic) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen)'
-[[gdelt]]
-name = "security-gulf"
-query = '(missile OR airstrike OR "drone attack" OR "air defense" OR ballistic) ("Saudi Arabia" OR UAE OR Dubai OR Qatar OR Bahrain OR Kuwait OR Oman OR Hormuz)'
+# ---------- sources ----------
 
-# Google News RSS searches (free, no key). "when:2h" limits to recent items.
+# GDELT rate-limits GitHub's shared addresses; one query, one retry. Delete this block if it keeps failing.
+[[gdelt]]
+name = "gdelt"
+query = '(airspace OR NOTAM OR "flights suspended" OR "flights cancelled" OR "airport closed" OR missile OR airstrike) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman)'
+
+# Google News searches. Optional: hl, gl, ceid (edition), region (used when a headline names none).
 [[google_news]]
-name = "aviation"
+name = "gn-aviation"
 query = '(airspace OR NOTAM OR "flights suspended" OR "flights cancelled" OR "airport closed") (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman) when:2h'
 [[google_news]]
-name = "security"
+name = "gn-security"
 query = '(missile OR airstrike OR "drone attack" OR "air defense") (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman) when:2h'
+[[google_news]]
+name = "gn-gulf-local"
+query = '(airspace OR flights OR airport OR airline OR missile OR drone) (site:khaleejtimes.com OR site:gulfnews.com OR site:thenationalnews.com OR site:gulf-times.com OR site:thepeninsulaqatar.com OR site:arabnews.com OR site:kuwaittimes.com OR site:timesofoman.com OR site:gdnonline.com) when:2h'
+[[google_news]]
+name = "gn-levant-local"
+query = '(airspace OR flights OR airport OR airline OR missile OR drone) (site:rudaw.net OR site:kurdistan24.net OR site:shafaq.com OR site:lorientlejour.com OR site:naharnet.com OR site:jordantimes.com OR site:iranintl.com OR site:english.aawsat.com) when:2h'
+[[google_news]]
+name = "gn-arabic-ae"
+query = '("المجال الجوي" OR "إلغاء الرحلات" OR "تعليق الرحلات" OR "إغلاق مطار" OR صواريخ OR "الدفاع الجوي") when:2h'
+hl = "ar"
+gl = "AE"
+ceid = "AE:ar"
+[[google_news]]
+name = "gn-arabic-sa"
+query = '("المجال الجوي" OR "إلغاء الرحلات" OR "تعليق الرحلات" OR "إغلاق مطار" OR صواريخ OR "الدفاع الجوي") when:2h'
+hl = "ar"
+gl = "SA"
+ceid = "SA:ar"
+[[google_news]]
+name = "gn-arabic-lb"
+query = '("المجال الجوي" OR "إلغاء الرحلات" OR "تعليق الرحلات" OR "إغلاق مطار" OR صواريخ OR غارة) when:2h'
+hl = "ar"
+gl = "LB"
+ceid = "LB:ar"
+[[google_news]]
+name = "gn-hebrew"
+query = '("המרחב האווירי" OR "ביטול טיסות" OR טיסות OR טילים OR יירוט) when:2h'
+hl = "he"
+gl = "IL"
+ceid = "IL:he"
+region = "Israel"
+
+# Direct RSS feeds from regional outlets. region = default when a headline names none.
+[[rss]]
+name = "Times of Israel"
+url = "https://www.timesofisrael.com/feed/"
+region = "Israel"
+[[rss]]
+name = "Jerusalem Post"
+url = "https://www.jpost.com/rss/rssfeedsfrontpage.aspx"
+region = "Israel"
+[[rss]]
+name = "Ynet (Hebrew)"
+url = "https://www.ynet.co.il/Integration/StoryRss2.xml"
+region = "Israel"
+[[rss]]
+name = "Al Jazeera English"
+url = "https://www.aljazeera.com/xml/rss/all.xml"
+[[rss]]
+name = "Al Jazeera Arabic"
+url = "https://www.aljazeera.net/aljazeerarss/a7c186be-1baa-4bd4-9d80-a84db769f779/73d0e1b4-532f-45ef-b135-bfdff8b8cab9"
+[[rss]]
+name = "BBC Arabic"
+url = "https://feeds.bbci.co.uk/arabic/rss.xml"
+[[rss]]
+name = "BBC Persian"
+url = "https://feeds.bbci.co.uk/persian/rss.xml"
+region = "Iran"
+[[rss]]
+name = "Tehran Times"
+url = "https://www.tehrantimes.com/rss"
+region = "Iran"
+[[rss]]
+name = "Asharq Al-Awsat (Arabic)"
+url = "https://aawsat.com/feed"
+[[rss]]
+name = "Saudi Gazette"
+url = "https://saudigazette.com.sa/rssFeed/74"
+region = "Saudi_Arabia"
+[[rss]]
+name = "Gulf Today"
+url = "https://www.gulftoday.ae/rssFeed/0"
+region = "UAE"
+[[rss]]
+name = "Doha News"
+url = "https://dohanews.co/feed/"
+region = "Qatar"
+[[rss]]
+name = "OPSGROUP"
+url = "https://ops.group/blog/feed/"
+[[rss]]
+name = "AirLive"
+url = "https://www.airlive.net/feed/"
 
 # EASA Conflict Zone Information Bulletins: any new bulletin or revision alerts immediately.
 [easa]
 url = "https://www.easa.europa.eu/en/domains/air-operations/czibs"
 
-# Pages to diff, e.g. airline travel-advisory pages. Any new sentence that names
-# a region alerts. Some sites block bots; failures show in the daily check-in.
+# Pages to diff, e.g. airline travel-advisory pages. Any new sentence naming a region alerts.
+# Many airline sites block automated requests; the run log shows whether each one works.
 # [[watch_pages]]
 # name = "Airline X travel updates"
 # url = "https://www.example.com/travel-updates"
