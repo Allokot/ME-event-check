@@ -7,7 +7,10 @@
 timezone = "Europe/Amsterdam"
 cooldown_minutes = 90      # minimum gap between news alerts for the same region
 cluster_threshold = 6      # medium items for one region in one run that escalate to an alert
-max_age_hours = 6          # ignore items older than this
+max_age_hours = 6          # ignore items published longer ago than this
+max_date_checks = 25       # per run: Google News items whose real publish date is read from the article page
+story_similarity = 0.6     # share of words two headlines must have in common to count as the same story
+story_window_days = 7      # how long a story is remembered; re-reports within this window don't alert
 seen_retention_days = 7
 digest_hour = 7            # local hour of the daily check-in
 
@@ -58,7 +61,7 @@ high = [
   "grounded", "suspends operations", "resumes flights", "flights resume",
   # Arabic
   "المجال الجوی", "اغلاق الاجواء", "تعلیق الرحلات", "تعلیق رحلات", "الغاء الرحلات", "الغاء رحلات",
-  "اغلاق مطار", "تحویل مسار", "تحویل الرحلات", "حظر الطیران", "توقف حرکه الطیران", "استئناف الرحلات",
+  "تعلق رحلاتها", "تعلیق رحلاتها", "تمدد تعلیق", "تمدد الغاء", "تلغی رحلات", "اغلاق مطار", "تحویل مسار", "تحویل الرحلات", "حظر الطیران", "توقف حرکه الطیران", "استئناف الرحلات",
   # Hebrew
   "המרחב האווירי", "מרחב אווירי", "ביטול טיסות", "ביטולי טיסות", "טיסות בוטלו", "בוטלו טיסות",
   "השעיית טיסות", "משעות את הטיסות", "מבטלות טיסות", "נסגר לטיסות",
@@ -77,14 +80,10 @@ medium = [
 # Headlines containing any of these are ignored
 exclude = ["polymarket", "odds", "betting", "prediction market", "stocks", "shares", "crypto",
            "bitcoin", "football", "fifa", "oil price", "military access", "military action",
-           "us planes", "u.s. planes", "us aircraft", "u.s. aircraft", "conference"]
+           "us planes", "u.s. planes", "us aircraft", "u.s. aircraft", "conference", "ebola", "ایبولا",
+           "re:\\bus\\W+(?:\\w+\\W+){0,2}?airspace\\W+(use|for)", "re:\\b(use|using)\\W+(?:\\w+\\W+){0,2}?airspace\\W+(to|for)"]
 
 # ---------- sources ----------
-
-# GDELT rate-limits GitHub's shared addresses; one query, one retry. Delete this block if it keeps failing.
-[[gdelt]]
-name = "gdelt"
-query = '(airspace OR NOTAM OR "flights suspended" OR "flights cancelled" OR "airport closed" OR missile OR airstrike) (Iran OR Iraq OR Israel OR Lebanon OR Syria OR Jordan OR Yemen OR Saudi OR UAE OR Qatar OR Bahrain OR Kuwait OR Oman)'
 
 # Google News searches. Optional: hl, gl, ceid (edition), region (used when a headline names none).
 [[google_news]]
